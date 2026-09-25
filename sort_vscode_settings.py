@@ -21,9 +21,33 @@ def sort_keys(value: Any) -> Any:
     return value
 
 
+def object_pairs_hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Detect duplicate keys in one JSON object; last value wins (dict semantics)."""
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for key, _ in pairs:
+        if key in seen:
+            duplicates.append(key)
+        seen.add(key)
+    if duplicates:
+        print(f"警告: 对象中存在重复键 {sorted(set(duplicates))}，仅保留最后一个值。")
+    return dict(pairs)
+
+
+def load_json(path: Path) -> Any:
+    """Read JSON with BOM tolerance; report parse errors with position, exit code 1."""
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as settings_file:
+            return json.load(settings_file, object_pairs_hook=object_pairs_hook)
+    except json.JSONDecodeError as error:
+        raise SystemExit(
+            f"JSON 解析失败: {path}\n"
+            f"  错误: {error.msg}（第 {error.lineno} 行，第 {error.colno} 列）"
+        ) from None
+
+
 def sort_settings(path: Path) -> None:
-    with path.open("r", encoding="utf-8-sig", newline="") as settings_file:
-        settings = json.load(settings_file)
+    settings = load_json(path)
     sorted_settings = sort_keys(settings)
     if json.dumps(settings) == json.dumps(sorted_settings):
         print(f"按键名已有序，无需修改: {path}")
@@ -36,7 +60,7 @@ def sort_settings(path: Path) -> None:
             newline="\n",
             prefix=f"{path.name}.",
             suffix=".sorted.tmp",
-            dir=Path.cwd(),
+            dir=path.parent,
             delete=False,
         ) as temporary_file:
             temporary_path = Path(temporary_file.name)
@@ -46,9 +70,8 @@ def sort_settings(path: Path) -> None:
             verified_settings = json.load(temporary_file)
         if verified_settings != settings:
             raise ValueError("临时文件校验失败，源文件未修改。")
-        with path.open("w", encoding="utf-8", newline="\n") as output:
-            json.dump(sorted_settings, output, ensure_ascii=False, indent=4)
-            output.write("\n")
+        # Atomic on the same volume: the temp file lives next to the target.
+        temporary_path.replace(path)
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
